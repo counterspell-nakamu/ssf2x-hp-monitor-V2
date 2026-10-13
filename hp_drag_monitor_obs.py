@@ -78,7 +78,7 @@ def select_crop_area(event, x, y, flags, param):
 
 def main():
     print("==================================================")
-    print("【1P + 2P HP リアルタイムモニター（検証モード付き）】")
+    print("【1P + 2P HP リアルタイムモニター（シンプル表示版）】")
     print("==================================================")
 
     # キャプチャスレッドの起動
@@ -145,7 +145,7 @@ def main():
     crop_width = abs(x1 - x2)
     crop_height = abs(y1 - y2)
 
-    # 黄色検出用HSV範囲（高閾値 220）
+    # 黄色検出用HSV範囲（YouTube等の圧縮・滲み対策緩和版）
     lower_yellow = np.array([15, 160, 160])
     upper_yellow = np.array([35, 255, 255])
 
@@ -267,15 +267,12 @@ def main():
         final_hp_1p = int(np.median(hp_history_1p))
         final_hp_2p = int(np.median(hp_history_2p))
 
-        # --- UI表示作成（検証用に検出ピクセル幅と満タン時幅も表示） ---
+        # --- シンプルなUI表示（古い方式と同じ形式） ---
         header_height = 45
         header_bg = np.zeros((header_height, w, 3), dtype=np.uint8)
         
-        # 表示形式: 1P: 0 (w:0/120) のようにピクセル数が一目でわかるように拡張
-        max_w1 = max_yellow_width_1p if max_yellow_width_1p else 0
-        max_w2 = max_yellow_width_2p if max_yellow_width_2p else 0
-        text_str = f"1P:{final_hp_1p:3d}(w:{detected_width_1p}/{max_w1}) | 2P:{final_hp_2p:3d}(w:{detected_width_2p}/{max_w2})"
-        cv2.putText(header_bg, text_str, (5, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
+        text_str = f"1P: {final_hp_1p:3d} / 144   |   2P: {final_hp_2p:3d} / 144"
+        cv2.putText(header_bg, text_str, (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
 
         # モードに応じたウィンドウ描画
         if show_debug_view:
