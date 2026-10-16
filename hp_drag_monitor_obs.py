@@ -76,9 +76,12 @@ def select_crop_area(event, x, y, flags, param):
         cropping = False
         current_mouse_pos = (x, y)
 
+def nothing(x):
+    pass
+
 def main():
     print("==================================================")
-    print("【1P + 2P HP リアルタイムモニター（シンプル表示版）】")
+    print("【1P + 2P HP リアルタイムモニター（手動切替・ハイブリッド版）】")
     print("==================================================")
 
     # キャプチャスレッドの起動
@@ -145,10 +148,6 @@ def main():
     crop_width = abs(x1 - x2)
     crop_height = abs(y1 - y2)
 
-    # 黄色検出用HSV範囲（YouTube等の圧縮・滲み対策緩和版）
-    lower_yellow = np.array([15, 160, 160])
-    upper_yellow = np.array([35, 255, 255])
-
     print("\n画面の安定を待っています（1秒待機）...")
     time.sleep(1.0)
 
@@ -163,15 +162,40 @@ def main():
     max_yellow_width_2p = None
     fixed_base_x_2p = None  # 2Pの固定基準点（KO側/左端）
 
+    # 単調減少ガード用（ラウンド途中で勝手に増えないように前回の確定値を保持）
+    hp_prev_guarded_1p = 144
+    hp_prev_guarded_2p = 144
+
     # 表示モードフラグ（True: 通常/デバッグ, False: 数字のみ/配信用）
     show_debug_view = True
 
+    # 画質モードフラグ（True: 低画質モード [膨張あり/1px判定], False: 高画質モード [膨張なし/2px判定]）
+    # デフォルトは安全のため高画質（False）スタート、現場で 'l' キーで切り替え可能
+    is_low_res_mode = False
+
+    # メインのデバッグ用ウィンドウを作成してリアルタイム調整用トラックバーを設置
+    debug_window_name = "HP Realtime Monitor (q: Quit, m: Mode, l: Low-Res)"
+    cv2.namedWindow(debug_window_name)
+    
+    # 彩度(S)と明度(V)のしきい値をリアルタイム変更するスライダー（初期値160、最大255）
+    cv2.createTrackbar("Yellow S_low", debug_window_name, 160, 255, nothing)
+    cv2.createTrackbar("Yellow V_low", debug_window_name, 160, 255, nothing)
+
     print("【1P & 2P】同時リアルタイム監視を開始します...")
     print(" ・『m』キー : 表示モード切り替え（通常 ⇄ 数字のみ）")
+    print(" ・『l』キー : 画質モード手動切替（高画質 ⇄ 低画質）")
     print(" ・『q』キー : 終了")
 
     # --- リアルタイム監視ループ ---
     while True:
+        # トラックバーから現在のしきい値をリアルタイム取得
+        s_val = cv2.getTrackbarPos("Yellow S_low", debug_window_name)
+        v_val = cv2.getTrackbarPos("Yellow V_low", debug_window_name)
+        
+        # 動的なHSVしきい値
+        lower_yellow = np.array([15, s_val, v_val])
+        upper_yellow = np.array([35, 255, 255])
+
         frame = get_latest_frame()
         if frame is None:
             time.sleep(0.01)
@@ -199,12 +223,25 @@ def main():
         hsv = cv2.cvtColor(crop_inner, cv2.COLOR_BGR2HSV)
         mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
 
+        # --- 手動切替による高・低画質モードの適用 ---
+        if is_low_res_mode:
+            # 低画質モード：ドットが滲むため膨張処理で隙間を埋め、判定を緩く(1px以上)
+            kernel = np.ones((1, 2), np.uint8)
+            target_mask = cv2.dilate(mask_yellow, kernel, iterations=1)
+            min_consecutive = 1
+            mode_str = "LOW"
+        else:
+            # 高画質モード：ドットが綺麗なので膨張させず、誤検知防止のため厳しめ(2px以上)
+            target_mask = mask_yellow
+            min_consecutive = 2
+            mode_str = "HIGH"
+
         # --- 1列ごとの縦連続ドット判定 ---
         valid_cols_1p = set()
         valid_cols_2p = set()
 
         for col in range(w):
-            col_pixels = mask_yellow[:, col]
+            col_pixels = target_mask[:, col]
             
             max_consecutive = 0
             current_consecutive = 0
@@ -216,8 +253,7 @@ def main():
                 else:
                     current_consecutive = 0
             
-            # 縦2ピクセル以上の連続を有効列とする
-            if max_consecutive >= 2:
+            if max_consecutive >= min_consecutive:
                 if col < mid_x:
                     valid_cols_1p.add(col)
                 else:
@@ -264,17 +300,29 @@ def main():
         hp_history_1p.append(raw_hp_1p)
         hp_history_2p.append(raw_hp_2p)
 
-        final_hp_1p = int(np.median(hp_history_1p))
-        final_hp_2p = int(np.median(hp_history_2p))
+        filtered_hp_1p = int(np.median(hp_history_1p))
+        filtered_hp_2p = int(np.median(hp_history_2p))
 
-        # --- シンプルなUI表示（古い方式と同じ形式） ---
+        # --- 単調減少ガード（背景の映り込みなどで勝手に増えないようにする処理） ---
+        if filtered_hp_1p >= 144 and filtered_hp_2p >= 144:
+            hp_prev_guarded_1p = 144
+            hp_prev_guarded_2p = 144
+        else:
+            if filtered_hp_1p < hp_prev_guarded_1p:
+                hp_prev_guarded_1p = filtered_hp_1p
+            if filtered_hp_2p < hp_prev_guarded_2p:
+                hp_prev_guarded_2p = filtered_hp_2p
+
+        final_hp_1p = hp_prev_guarded_1p
+        final_hp_2p = hp_prev_guarded_2p
+
+        # --- シンプルなUI表示（現在の画質モードも常時表示） ---
         header_height = 45
         header_bg = np.zeros((header_height, w, 3), dtype=np.uint8)
         
-        text_str = f"1P: {final_hp_1p:3d} / 144   |   2P: {final_hp_2p:3d} / 144"
-        cv2.putText(header_bg, text_str, (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+        text_str = f"1P: {final_hp_1p:3d} | 2P: {final_hp_2p:3d}  [{mode_str}]"
+        cv2.putText(header_bg, text_str, (10, 32), cv2.FONT_HERSHEY_SIMPLEX, 0.70, (255, 255, 255), 2)
 
-        # モードに応じたウィンドウ描画
         if show_debug_view:
             mask_yellow_full = np.zeros((h, w, 3), dtype=np.uint8)
             if fixed_base_x_1p is not None and detected_width_1p > 0:
@@ -290,17 +338,25 @@ def main():
                 hp_img, 
                 mask_yellow_full
             ])
-            cv2.imshow("HP Realtime Monitor (q: Quit, m: Toggle Mode)", debug_view)
+            cv2.imshow(debug_window_name, debug_view)
         else:
-            cv2.imshow("HP Realtime Monitor (q: Quit, m: Toggle Mode)", header_bg)
+            cv2.imshow(debug_window_name, header_bg)
 
         key = cv2.waitKey(30) & 0xFF
         if key == ord('q'):
             break
         elif key == ord('m'):
             show_debug_view = not show_debug_view
+        elif key == ord('l'):
+            is_low_res_mode = not is_low_res_mode
+            print(f"[切替] 画質モードを変更しました: {'LOW (低画質)' if is_low_res_mode else 'HIGH (高画質)'}")
 
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        input("\n[エラーが発生しました] 黒い画面を閉じるには Enterキーを押してください...")
